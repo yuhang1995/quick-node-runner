@@ -2,7 +2,7 @@
   "name": "quick-node-runner",
   "displayName": "Quick Node Runner",
   "description": "快速运行 Node 项目，无需手动打开终端",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "RyanYu",
   "repository": {
     "type": "git",
@@ -35,6 +35,10 @@
       {
         "command": "quickNodeRunner.openProject",
         "title": "打开 Node 项目"
+      },
+      {
+        "command": "quickNodeRunner.showOutput",
+        "title": "显示 Quick Node Runner 输出"
       }
     ],
     "configuration": {

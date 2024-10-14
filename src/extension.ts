@@ -33,6 +33,13 @@ export function activate(context: vscode.ExtensionContext) {
     // 创建输出通道
     outputChannel = vscode.window.createOutputChannel('Quick Node Runner');
 
+    // 监听窗口状态变化
+    context.subscriptions.push(vscode.window.onDidChangeWindowState(e => {
+        if (e.focused) {
+            syncOutputChannel(context);
+        }
+    }));
+
     try {
         let showMenuDisposable = vscode.commands.registerCommand('quickNodeRunner.showMenu', async () => {
             const globalState = getGlobalState(context);
@@ -146,10 +153,7 @@ export function activate(context: vscode.ExtensionContext) {
             currentScriptName = { path: projectPath, script: scriptToRun };
 
             // 清空并显示输出通道
-            outputChannel.clear();
-            outputChannel.show(true);
-
-            outputChannel.appendLine(`正在启动 Node 项目，运行脚本: ${scriptToRun}`);
+            appendToOutput(`正在启动 Node 项目，运行脚本: ${scriptToRun}\n`, context);
 
             // 使用子进程运行项目
             const projectProcess = child_process.spawn('npm', ['run', scriptToRun], {
@@ -161,20 +165,20 @@ export function activate(context: vscode.ExtensionContext) {
             updateGlobalState(context, true, currentScriptName, projectProcess.pid);
 
             projectProcess.stdout?.on('data', (data) => {
-                outputChannel.append(data.toString());
+                appendToOutput(data.toString(), context);
             });
 
             projectProcess.stderr?.on('data', (data) => {
-                outputChannel.append(data.toString());
+                appendToOutput(data.toString(), context);
             });
 
             projectProcess.on('error', (error) => {
-                outputChannel.appendLine(`\n启动进程时发生错误: ${error.message}`);
+                appendToOutput(`\n启动进程时发生错误: ${error.message}\n`, context);
                 updateGlobalState(context, false);
             });
 
             projectProcess.on('close', (code) => {
-                outputChannel.appendLine(`\n进程已退出，退出码: ${code}`);
+                appendToOutput(`\n进程已退出，退出码: ${code}\n`, context);
                 updateGlobalState(context, false);
             });
 
@@ -187,10 +191,10 @@ export function activate(context: vscode.ExtensionContext) {
             if (globalState.isRunning && globalState.pid) {
                 try {
                     await killProcessTree(globalState.pid);
-                    outputChannel.appendLine('\n项目已停止');
+                    appendToOutput('\n项目已停止\n', context);
                     updateGlobalState(context, false);
                 } catch (error) {
-                    outputChannel.appendLine(`\n停止进程时发生错误: ${error}`);
+                    appendToOutput(`\n停止进程时发生错误: ${error}\n`, context);
                     // 如果进程已经不存在，我们也应该更新状态
                     updateGlobalState(context, false);
                 }
@@ -209,7 +213,15 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
 
-        context.subscriptions.push(showMenuDisposable, startDisposable, stopDisposable, openProjectDisposable, outputChannel);
+        context.subscriptions.push(
+            showMenuDisposable,
+            startDisposable,
+            stopDisposable,
+            openProjectDisposable,
+            vscode.commands.registerCommand('quickNodeRunner.showOutput', () => {
+                outputChannel.show();
+            })
+        );
 
         updateStatusBar(context);
         startStatusCheck(context);
@@ -303,6 +315,23 @@ function killProcessTree(pid: number): Promise<void> {
             resolve();
         });
     });
+}
+
+// 新增函数：同步输出通道
+function syncOutputChannel(context: vscode.ExtensionContext) {
+    const outputContent = context.globalState.get<string>('quickNodeRunner.outputContent');
+    if (outputContent) {
+        outputChannel.clear();
+        outputChannel.append(outputContent);
+    }
+}
+
+// 修改现有的输出函数
+function appendToOutput(text: string, context: vscode.ExtensionContext) {
+    outputChannel.append(text);
+    // 保存输出内容到全局状态
+    const currentContent = context.globalState.get<string>('quickNodeRunner.outputContent') || '';
+    context.globalState.update('quickNodeRunner.outputContent', currentContent + text);
 }
 
 export function deactivate() {
