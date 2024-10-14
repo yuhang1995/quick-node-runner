@@ -8,10 +8,18 @@ let statusBarItem: vscode.StatusBarItem;
 let currentProjectPath: string | undefined;
 let currentScriptName: { path: string, script: string } | undefined;
 let outputChannel: vscode.OutputChannel;
-let terminal: vscode.Terminal | undefined;
 
 let globalStateKey: string | undefined;
 let statusCheckInterval: NodeJS.Timeout | undefined;
+
+// 在文件顶部添加一个常量来定义最大输出长度
+const MAX_OUTPUT_LENGTH = 100000; // 例如，限制为 100,000 个字符
+
+// 在文件顶部添加这个常量
+const OUTPUT_SEPARATOR = '\n[QuickNodeRunner_LOG_SEPARATOR]\n';
+
+// 添加一个新的常量用于全局状态的键
+const GLOBAL_STATE_KEY = 'quickNodeRunner.globalProjectState';
 
 function debounce(func: Function, wait: number): (...args: any[]) => void {
     let timeout: NodeJS.Timeout | null = null;
@@ -21,6 +29,18 @@ function debounce(func: Function, wait: number): (...args: any[]) => void {
         }
         timeout = setTimeout(() => func(...args), wait);
     };
+}
+
+// 在文件顶部添加一个新的函数来检测包管器
+async function detectPackageManager(projectPath: string): Promise<string> {
+    const packageManagers = ['yarn', 'pnpm', 'npm'];
+    for (const pm of packageManagers) {
+        const lockFile = pm === 'npm' ? 'package-lock.json' : `${pm}.lock`;
+        if (fs.existsSync(path.join(projectPath, lockFile))) {
+            return pm;
+        }
+    }
+    return 'npm'; // 默认使用 npm
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -40,6 +60,20 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }));
 
+    // 添加工作区关闭事件监听器
+    context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(event => {
+        event.removed.forEach(() => {
+            cleanupOnProjectClose(context);
+        });
+    }));
+
+    // 添加定期检查全局状态的功能
+    const globalStateInterval = setInterval(() => {
+        syncGlobalState(context);
+    }, 5000); // 每5秒检查一次
+
+    context.subscriptions.push({ dispose: () => clearInterval(globalStateInterval) });
+
     try {
         let showMenuDisposable = vscode.commands.registerCommand('quickNodeRunner.showMenu', async () => {
             const globalState = getGlobalState(context);
@@ -52,6 +86,10 @@ export function activate(context: vscode.ExtensionContext) {
                     {
                         label: '$(folder-opened) 打开项目',
                         description: globalState.scriptInfo?.path
+                    },
+                    {
+                        label: '$(output) 查看输出',
+                        description: '打开输出面板'
                     }
                 ];
 
@@ -64,6 +102,8 @@ export function activate(context: vscode.ExtensionContext) {
                         vscode.commands.executeCommand('quickNodeRunner.stop');
                     } else if (selectedItem.label.includes('打开项目')) {
                         vscode.commands.executeCommand('quickNodeRunner.openProject');
+                    } else if (selectedItem.label.includes('查看输出')) {
+                        vscode.commands.executeCommand('quickNodeRunner.showOutput');
                     }
                 }
             } else {
@@ -152,11 +192,14 @@ export function activate(context: vscode.ExtensionContext) {
 
             currentScriptName = { path: projectPath, script: scriptToRun };
 
-            // 清空并显示输出通道
-            appendToOutput(`正在启动 Node 项目，运行脚本: ${scriptToRun}\n`, context);
+            // 检测包管理器
+            const packageManager = await detectPackageManager(projectPath);
 
-            // 使用子进程运行项目
-            const projectProcess = child_process.spawn('npm', ['run', scriptToRun], {
+            // 清空并显示输���通道
+            appendToOutput(`正在使用 ${packageManager} 启动 Node 项目，运行脚本: ${scriptToRun}\n`, context);
+
+            // 使用检测到的包管理器运行项目
+            const projectProcess = child_process.spawn(packageManager, ['run', scriptToRun], {
                 cwd: projectPath,
                 shell: true
             });
@@ -173,7 +216,7 @@ export function activate(context: vscode.ExtensionContext) {
             });
 
             projectProcess.on('error', (error) => {
-                appendToOutput(`\n启动进程时发生错误: ${error.message}\n`, context);
+                appendToOutput(`\n启进程时发生错误: ${error.message}\n`, context);
                 updateGlobalState(context, false);
             });
 
@@ -213,6 +256,30 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
 
+        // 将 setProjectPathDisposable 的定义移到这里
+        let setProjectPathDisposable = vscode.commands.registerCommand('quickNodeRunner.setProjectPath', async () => {
+            const selectedFolder = await vscode.window.showOpenDialog({
+                canSelectFiles: false,
+                canSelectFolders: true,
+                canSelectMany: false,
+                openLabel: '选择 Node 项目目录'
+            });
+
+            if (selectedFolder && selectedFolder.length > 0) {
+                const projectPath = selectedFolder[0].fsPath;
+                const config = vscode.workspace.getConfiguration('quickNodeRunner');
+                await config.update('projectPath', projectPath, vscode.ConfigurationTarget.Workspace);
+                vscode.window.showInformationMessage(`项目路径已更新: ${projectPath}`);
+                checkAndSyncProjectStatus(context);
+            }
+        });
+
+        // 注册新的命令
+        context.subscriptions.push(setProjectPathDisposable);
+
+        // 添加新的函数调用
+        checkAndSyncProjectStatus(context);
+
         context.subscriptions.push(
             showMenuDisposable,
             startDisposable,
@@ -232,6 +299,35 @@ export function activate(context: vscode.ExtensionContext) {
     }
 }
 
+// 添加新的函数来检查和同步项目状态
+async function checkAndSyncProjectStatus(context: vscode.ExtensionContext) {
+    const config = vscode.workspace.getConfiguration('quickNodeRunner');
+    const projectPath = config.get<string>('projectPath');
+
+    if (projectPath && fs.existsSync(projectPath)) {
+        const globalState = getGlobalState(context);
+        if (globalState.isRunning && globalState.scriptInfo) {
+            // 检查进程是否仍在运行
+            try {
+                process.kill(globalState.pid!, 0);
+                // 如果没有出错误，进程仍在运行
+                updateStatusBar(context);
+            } catch (e) {
+                // 进程不存在，更新状态
+                updateGlobalState(context, false);
+                vscode.window.showInformationMessage('之前运行的项目已停止');
+            }
+        } else {
+            // 项目未运行，更新状态栏
+            updateStatusBar(context);
+        }
+    } else {
+        // 项目路径不存在，清除状态
+        updateGlobalState(context, false);
+        vscode.window.showWarningMessage('配置的项目路径不存在，请重新设置');
+    }
+}
+
 function getGlobalState(context: vscode.ExtensionContext) {
     const state = context.globalState.get('quickNodeRunner.globalState') as { 
         isRunning: boolean, 
@@ -248,8 +344,22 @@ function updateGlobalState(
     scriptInfo?: { path: string, script: string },
     pid?: number
 ) {
-    context.globalState.update('quickNodeRunner.globalState', { isRunning, scriptInfo, pid, timestamp: Date.now() });
+    let newState;
+    if (isRunning) {
+        newState = { isRunning, scriptInfo, pid, timestamp: Date.now() };
+    } else {
+        // 当进程停止时，清空所有状态
+        newState = { isRunning: false, scriptInfo: undefined, pid: undefined, timestamp: Date.now() };
+    }
+    context.globalState.update('quickNodeRunner.globalState', newState);
+    context.globalState.update(GLOBAL_STATE_KEY, newState);
     updateStatusBar(context);
+
+    // 如果进程停止，清空输出内容
+    if (!isRunning) {
+        context.globalState.update('quickNodeRunner.outputContent', undefined);
+        outputChannel.clear();
+    }
 }
 
 function startStatusCheck(context: vscode.ExtensionContext) {
@@ -277,6 +387,17 @@ function stopStatusCheck() {
 
 function updateStatusBar(context: vscode.ExtensionContext) {
     const globalState = getGlobalState(context);
+    const config = vscode.workspace.getConfiguration('quickNodeRunner');
+    const projectPath = config.get<string>('projectPath');
+
+    if (!projectPath || !fs.existsSync(projectPath)) {
+        statusBarItem.text = '$(warning) 未设置项目路径';
+        statusBarItem.tooltip = '点击设置 Node 项目路径';
+        statusBarItem.command = 'quickNodeRunner.setProjectPath';
+        statusBarItem.show();
+        return;
+    }
+
     if (globalState.isRunning && globalState.scriptInfo) {
         const projectName = path.basename(globalState.scriptInfo.path);
         statusBarItem.text = `$(radio-tower) ${globalState.scriptInfo.script} (${projectName})`;
@@ -287,6 +408,7 @@ function updateStatusBar(context: vscode.ExtensionContext) {
         statusBarItem.tooltip = '点击运行 Node 项目';
         statusBarItem.backgroundColor = undefined;
     }
+    statusBarItem.command = 'quickNodeRunner.showMenu';
     statusBarItem.show();
 }
 
@@ -309,7 +431,7 @@ function killProcessTree(pid: number): Promise<void> {
             try {
                 process.kill(pid);
             } catch (e) {
-                // 忽略已经不存在的进程
+                // 忽略已经不存的进程
             }
             
             resolve();
@@ -317,26 +439,119 @@ function killProcessTree(pid: number): Promise<void> {
     });
 }
 
-// 新增函数：同步输出通道
+function appendToOutput(text: string, context: vscode.ExtensionContext) {
+    outputChannel.append(text);
+
+    // 获取当前存储的内容
+    let currentContent = context.globalState.get<string>('quickNodeRunner.outputContent') || '';
+
+    // 添加新的文本，使用分隔符
+    currentContent += (currentContent ? OUTPUT_SEPARATOR : '') + text.trim();
+
+    // 如果内容超过最大长度，则截取最新的部分
+    if (currentContent.length > MAX_OUTPUT_LENGTH) {
+        // 找到最后一个完整的日志条目的起始位置
+        const lastSeparatorIndex = currentContent.lastIndexOf(OUTPUT_SEPARATOR, currentContent.length - MAX_OUTPUT_LENGTH);
+        if (lastSeparatorIndex !== -1) {
+            currentContent = currentContent.slice(lastSeparatorIndex + OUTPUT_SEPARATOR.length);
+        } else {
+            // 如果找不到分隔符，就从头开始截取
+            currentContent = currentContent.slice(-MAX_OUTPUT_LENGTH);
+        }
+    }
+
+    // 更新全局状态
+    context.globalState.update('quickNodeRunner.outputContent', currentContent);
+}
+
+// 修改 syncOutputChannel 函数
 function syncOutputChannel(context: vscode.ExtensionContext) {
     const outputContent = context.globalState.get<string>('quickNodeRunner.outputContent');
     if (outputContent) {
         outputChannel.clear();
-        outputChannel.append(outputContent);
+        // 将内容按分隔符分割，然后重新组合，去除分隔符
+        const contentWithoutSeparators = outputContent
+            .split(OUTPUT_SEPARATOR)
+            .filter(Boolean)  // 移除空字符串
+            .join('\n');
+        outputChannel.append(contentWithoutSeparators);
     }
 }
 
-// 修改现有的输出函数
-function appendToOutput(text: string, context: vscode.ExtensionContext) {
-    outputChannel.append(text);
-    // 保存输出内容到全局状态
-    const currentContent = context.globalState.get<string>('quickNodeRunner.outputContent') || '';
-    context.globalState.update('quickNodeRunner.outputContent', currentContent + text);
+function cleanupOnProjectClose(context: vscode.ExtensionContext) {
+    console.log('工作区已关闭，清理 Quick Node Runner 状态');
+
+    // 停止正在运行的进程
+    const globalState = getGlobalState(context);
+    if (globalState.isRunning && globalState.pid) {
+        try {
+            killProcessTree(globalState.pid);
+        } catch (error) {
+            console.error('停止进程时发生错误:', error);
+        }
+    }
+
+    // 清空全局状态
+    context.globalState.update('quickNodeRunner.globalState', undefined);
+    context.globalState.update('quickNodeRunner.outputContent', undefined);
+    context.globalState.update('quickNodeRunner.stopSignal', undefined);
+
+    // 清空输出通道
+    if (outputChannel) {
+        outputChannel.clear();
+    }
+
+    // 更新状态栏
+    updateStatusBar(context);
+
+    // 停止状态检查
+    stopStatusCheck();
+
+    // 清空全局项目状态
+    context.globalState.update(GLOBAL_STATE_KEY, undefined);
+
+    console.log('Quick Node Runner 状态已清理');
 }
 
-export function deactivate() {
+export function deactivate(context: vscode.ExtensionContext) {
+    console.log('插件 "Quick Node Runner" 正在停用');
+
+    cleanupOnProjectClose(context);
+
+    // 处理输出通道
     if (outputChannel) {
         outputChannel.dispose();
     }
-    stopStatusCheck();
+
+    // 移除状态栏项
+    if (statusBarItem) {
+        statusBarItem.dispose();
+    }
+
+    // 清空配置
+    const config = vscode.workspace.getConfiguration('quickNodeRunner');
+    config.update('projectPath', undefined, vscode.ConfigurationTarget.Global);
+
+    console.log('插件 "Quick Node Runner" 已完全停用并清理');
+}
+
+// 同步全局状态
+function syncGlobalState(context: vscode.ExtensionContext) {
+    const globalProjectState = context.globalState.get(GLOBAL_STATE_KEY) as {
+        isRunning: boolean,
+        scriptInfo?: { path: string, script: string },
+        pid?: number,
+        timestamp: number
+    } | undefined;
+
+    if (globalProjectState && globalProjectState.timestamp > getGlobalState(context).timestamp) {
+        // 全局状态比当前窗口状态新，更新当前窗口状态
+        context.globalState.update('quickNodeRunner.globalState', globalProjectState);
+        updateStatusBar(context);
+        if (globalProjectState.isRunning) {
+            startStatusCheck(context);
+        } else {
+            stopStatusCheck();
+        }
+    }
 }
