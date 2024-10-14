@@ -1,0 +1,40 @@
+name: Release VSCode Extension
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      discussions: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+      - name: Install dependencies
+        run: npm ci
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+      - name: Package Extension
+        run: vsce package
+      - name: Get Extension Name
+        id: get_extension_name
+        run: echo "VSIX_NAME=$(ls *.vsix)" >> $GITHUB_OUTPUT
+      - name: Create Release
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --generate-notes \
+            ${{ steps.get_extension_name.outputs.VSIX_NAME }}
+        env:
+          GH_TOKEN: ${{ github.token }}

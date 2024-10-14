@@ -1,0 +1,72 @@
+{
+  "name": "quick-node-runner",
+  "displayName": "Quick Node Runner",
+  "description": "快速运行 Node 项目，无需手动打开终端",
+  "version": "0.0.1",
+  "publisher": "RyanYu",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yuhang1995/quick-node-runner.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "quickNodeRunner.showMenu",
+        "title": "显示 Quick Node Runner 菜单"
+      },
+      {
+        "command": "quickNodeRunner.start",
+        "title": "启动 Node 项目"
+      },
+      {
+        "command": "quickNodeRunner.stop",
+        "title": "停止 Node 项目"
+      },
+      {
+        "command": "quickNodeRunner.openProject",
+        "title": "打开 Node 项目"
+      }
+    ],
+    "configuration": {
+      "title": "Quick Node Runner",
+      "properties": {
+        "quickNodeRunner.projectPath": {
+          "type": "string",
+          "default": "",
+          "description": "Node 项目的路径"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "dependencies": {
+    "@types/node": "^14.0.0",
+    "@types/vscode": "^1.60.0"
+  },
+  "devDependencies": {
+    "eslint": "^7.27.0",
+    "glob": "^7.1.7",
+    "mocha": "^8.4.0",
+    "typescript": "^4.5.0",
+    "vscode-test": "^1.5.2",
+    "@typescript-eslint/eslint-plugin": "^4.14.1",
+    "@typescript-eslint/parser": "^4.14.1"
+  }
+}
