@@ -2,13 +2,16 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as child_process from 'child_process';
+import psTree from 'ps-tree';
 
-let projectProcess: child_process.ChildProcess | null = null;
 let statusBarItem: vscode.StatusBarItem;
 let currentProjectPath: string | undefined;
-let currentScriptName: string | undefined;
+let currentScriptName: { path: string, script: string } | undefined;
 let outputChannel: vscode.OutputChannel;
 let terminal: vscode.Terminal | undefined;
+
+let globalStateKey: string | undefined;
+let statusCheckInterval: NodeJS.Timeout | undefined;
 
 function debounce(func: Function, wait: number): (...args: any[]) => void {
     let timeout: NodeJS.Timeout | null = null;
@@ -32,15 +35,16 @@ export function activate(context: vscode.ExtensionContext) {
 
     try {
         let showMenuDisposable = vscode.commands.registerCommand('quickNodeRunner.showMenu', async () => {
-            if (projectProcess) {
+            const globalState = getGlobalState(context);
+            if (globalState.isRunning) {
                 const items: vscode.QuickPickItem[] = [
                     {
                         label: '$(stop) 停止 Node 项目',
-                        description: currentScriptName ? `当前脚本: ${currentScriptName}` : undefined
+                        description: globalState.scriptInfo ? `当前脚本: ${globalState.scriptInfo.script}` : undefined
                     },
                     {
                         label: '$(folder-opened) 打开项目',
-                        description: currentProjectPath
+                        description: globalState.scriptInfo?.path
                     }
                 ];
 
@@ -62,6 +66,20 @@ export function activate(context: vscode.ExtensionContext) {
 
         let startDisposable = vscode.commands.registerCommand('quickNodeRunner.start', debounce(async function () {
             console.log('quickNodeRunner.start 命令被触发（防抖后）');
+            
+            const globalState = getGlobalState(context);
+            // 检查是否已有项目在运行
+            if (globalState.isRunning) {
+                const action = await vscode.window.showInformationMessage(
+                    `已有项目正在运行：${globalState.scriptInfo?.script} (${path.basename(globalState.scriptInfo?.path || '')})。是否停止当前项目并启动新项目？`,
+                    '是', '否'
+                );
+                if (action !== '是') {
+                    return;
+                }
+                await vscode.commands.executeCommand('quickNodeRunner.stop');
+            }
+
             const config = vscode.workspace.getConfiguration('quickNodeRunner');
             let projectPath = config.get<string>('projectPath');
 
@@ -88,6 +106,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             currentProjectPath = projectPath;
+            globalStateKey = `quickNodeRunner.${projectPath}`;
 
             const packageJsonPath = path.join(projectPath, 'package.json');
 
@@ -96,7 +115,14 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+            let packageJson;
+            try {
+                packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+            } catch (error) {
+                vscode.window.showErrorMessage('无法解析 package.json 文件');
+                return;
+            }
+
             const scripts = packageJson.scripts || {};
             const scriptNames = Object.keys(scripts);
 
@@ -114,23 +140,25 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             if (!scriptToRun) {
-                return; // 静默返回，不显示错误消息
+                return; // 用户取消选择
             }
 
-            currentScriptName = scriptToRun;
+            currentScriptName = { path: projectPath, script: scriptToRun };
 
-            // 清空输出通道
+            // 清空并显示输出通道
             outputChannel.clear();
-            // 显示输出通道
             outputChannel.show(true);
 
             outputChannel.appendLine(`正在启动 Node 项目，运行脚本: ${scriptToRun}`);
 
             // 使用子进程运行项目
-            projectProcess = child_process.spawn('npm', ['run', scriptToRun], {
+            const projectProcess = child_process.spawn('npm', ['run', scriptToRun], {
                 cwd: projectPath,
                 shell: true
             });
+
+            // 保存进程 ID 到全局状态
+            updateGlobalState(context, true, currentScriptName, projectProcess.pid);
 
             projectProcess.stdout?.on('data', (data) => {
                 outputChannel.append(data.toString());
@@ -140,26 +168,34 @@ export function activate(context: vscode.ExtensionContext) {
                 outputChannel.append(data.toString());
             });
 
-            projectProcess.on('close', (code) => {
-                outputChannel.appendLine(`\n进程已退出`);
-                projectProcess = null;
-                updateStatusBar(false);
-                // 移除项目停止的提示信息
+            projectProcess.on('error', (error) => {
+                outputChannel.appendLine(`\n启动进程时发生错误: ${error.message}`);
+                updateGlobalState(context, false);
             });
 
-            updateStatusBar(true);
-            // 移除项目启动的提示信息
+            projectProcess.on('close', (code) => {
+                outputChannel.appendLine(`\n进程已退出，退出码: ${code}`);
+                updateGlobalState(context, false);
+            });
 
-        }, 500)); // 500ms 的防抖时间
+            startStatusCheck(context);
 
-        let stopDisposable = vscode.commands.registerCommand('quickNodeRunner.stop', () => {
-            if (projectProcess) {
-                projectProcess.kill();
-                projectProcess = null;
-                currentScriptName = undefined;
-                updateStatusBar(false);
-                outputChannel.appendLine('\n项目已手动停止');
-                // 移除项目停止的提示信息
+        }, 500));
+
+        let stopDisposable = vscode.commands.registerCommand('quickNodeRunner.stop', async () => {
+            const globalState = getGlobalState(context);
+            if (globalState.isRunning && globalState.pid) {
+                try {
+                    await killProcessTree(globalState.pid);
+                    outputChannel.appendLine('\n项目已停止');
+                    updateGlobalState(context, false);
+                } catch (error) {
+                    outputChannel.appendLine(`\n停止进程时发生错误: ${error}`);
+                    // 如果进程已经不存在，我们也应该更新状态
+                    updateGlobalState(context, false);
+                }
+            } else {
+                vscode.window.showInformationMessage('没有正在运行的项目');
             }
         });
 
@@ -169,13 +205,14 @@ export function activate(context: vscode.ExtensionContext) {
             } else {
                 // 移除错误提示，改为在状态栏显示
                 statusBarItem.text = '$(error) 没有正在运行的项目';
-                setTimeout(() => updateStatusBar(false), 3000); // 3秒后恢复正常状态
+                setTimeout(() => updateStatusBar(context), 3000); // 3秒后恢复正常状态
             }
         });
 
         context.subscriptions.push(showMenuDisposable, startDisposable, stopDisposable, openProjectDisposable, outputChannel);
 
-        updateStatusBar(false);
+        updateStatusBar(context);
+        startStatusCheck(context);
 
     } catch (error) {
         console.error('插件激活过程中发生错误:', error);
@@ -183,10 +220,55 @@ export function activate(context: vscode.ExtensionContext) {
     }
 }
 
-function updateStatusBar(isRunning: boolean) {
-    if (isRunning) {
-        statusBarItem.text = `$(radio-tower) ${currentScriptName || 'Node 项目运行中'}`;
-        statusBarItem.tooltip = `点击查看选项`;
+function getGlobalState(context: vscode.ExtensionContext) {
+    const state = context.globalState.get('quickNodeRunner.globalState') as { 
+        isRunning: boolean, 
+        scriptInfo?: { path: string, script: string }, 
+        pid?: number,
+        timestamp: number 
+    } | undefined;
+    return state || { isRunning: false, timestamp: Date.now() };
+}
+
+function updateGlobalState(
+    context: vscode.ExtensionContext, 
+    isRunning: boolean, 
+    scriptInfo?: { path: string, script: string },
+    pid?: number
+) {
+    context.globalState.update('quickNodeRunner.globalState', { isRunning, scriptInfo, pid, timestamp: Date.now() });
+    updateStatusBar(context);
+}
+
+function startStatusCheck(context: vscode.ExtensionContext) {
+    stopStatusCheck();
+    statusCheckInterval = setInterval(() => {
+        const globalState = getGlobalState(context);
+        const stopSignal = context.globalState.get('quickNodeRunner.stopSignal') as number | undefined;
+
+        if (stopSignal && stopSignal > globalState.timestamp) {
+            // 收到停止信号，更新状态
+            updateGlobalState(context, false);
+            context.globalState.update('quickNodeRunner.stopSignal', undefined);
+        } else {
+            updateStatusBar(context);
+        }
+    }, 1000);
+}
+
+function stopStatusCheck() {
+    if (statusCheckInterval) {
+        clearInterval(statusCheckInterval);
+        statusCheckInterval = undefined;
+    }
+}
+
+function updateStatusBar(context: vscode.ExtensionContext) {
+    const globalState = getGlobalState(context);
+    if (globalState.isRunning && globalState.scriptInfo) {
+        const projectName = path.basename(globalState.scriptInfo.path);
+        statusBarItem.text = `$(radio-tower) ${globalState.scriptInfo.script} (${projectName})`;
+        statusBarItem.tooltip = `正在运行: ${globalState.scriptInfo.script}\n项目: ${projectName}\n点击查看选项`;
         statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     } else {
         statusBarItem.text = '$(play) 运行 Node 项目';
@@ -196,11 +278,36 @@ function updateStatusBar(isRunning: boolean) {
     statusBarItem.show();
 }
 
+function killProcessTree(pid: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+        psTree(pid, (err: Error | null, children: readonly psTree.PS[]) => {
+            if (err) {
+                reject(err);
+                return;
+            }
+            
+            children.forEach((child) => {
+                try {
+                    process.kill(parseInt(child.PID));
+                } catch (e) {
+                    // 忽略已经不存在的进程
+                }
+            });
+            
+            try {
+                process.kill(pid);
+            } catch (e) {
+                // 忽略已经不存在的进程
+            }
+            
+            resolve();
+        });
+    });
+}
+
 export function deactivate() {
-    if (projectProcess) {
-        projectProcess.kill();
-    }
     if (outputChannel) {
         outputChannel.dispose();
     }
+    stopStatusCheck();
 }

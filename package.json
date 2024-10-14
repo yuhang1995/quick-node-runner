@@ -2,7 +2,7 @@
   "name": "quick-node-runner",
   "displayName": "Quick Node Runner",
   "description": "快速运行 Node 项目，无需手动打开终端",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "RyanYu",
   "repository": {
     "type": "git",
@@ -57,16 +57,18 @@
     "test": "node ./out/test/runTest.js"
   },
   "dependencies": {
-    "@types/node": "^14.0.0",
-    "@types/vscode": "^1.60.0"
+    "ps-tree": "^1.2.0"
   },
   "devDependencies": {
+    "@types/node": "^14.0.0",
+    "@types/vscode": "^1.60.0",
+    "@types/ps-tree": "^1.1.6",
+    "@typescript-eslint/eslint-plugin": "^4.14.1",
+    "@typescript-eslint/parser": "^4.14.1",
     "eslint": "^7.27.0",
     "glob": "^7.1.7",
     "mocha": "^8.4.0",
     "typescript": "^4.5.0",
-    "vscode-test": "^1.5.2",
-    "@typescript-eslint/eslint-plugin": "^4.14.1",
-    "@typescript-eslint/parser": "^4.14.1"
+    "vscode-test": "^1.5.2"
   }
 }
