@@ -74,6 +74,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (e.focused) {
             syncOutputChannel(context);
             syncGlobalState(context);
+            startStatusCheck(context);
         }
     }));
 

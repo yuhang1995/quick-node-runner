@@ -2,7 +2,7 @@
   "name": "quick-node-runner",
   "displayName": "Quick Node Runner",
   "description": "快速运行 Node 项目，无需手动打开终端",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "RyanYu",
   "icon": "assets/logo.png",
   "repository": {
