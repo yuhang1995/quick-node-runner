@@ -5,6 +5,7 @@ import * as child_process from 'child_process';
 import psTree from 'ps-tree';
 
 let statusBarItem: vscode.StatusBarItem;
+let stopStatusBarItem: vscode.StatusBarItem;
 let currentProjectPath: string | undefined;
 let currentScriptName: { path: string, script: string } | undefined;
 let outputChannel: vscode.OutputChannel;
@@ -17,6 +18,7 @@ const OUTPUT_SEPARATOR = '\n[QuickNodeRunner_LOG_SEPARATOR]\n';
 
 // 添加一个新的常量用于全局状态的键
 const GLOBAL_STATE_KEY = 'quickNodeRunner.globalProjectState';
+
 
 function debounce(func: Function, wait: number): (...args: any[]) => void {
     let timeout: NodeJS.Timeout | null = null;
@@ -54,9 +56,15 @@ function getProjectPath(): string | undefined {
 export function activate(context: vscode.ExtensionContext) {
     console.log('插件 "Quick Node Runner" 已激活');
 
-    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    // 修改主状态栏项的优先级
+    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
     statusBarItem.command = 'quickNodeRunner.showMenu';
     context.subscriptions.push(statusBarItem);
+
+    // 修改停止按钮状态栏项的优先级，使其紧跟在主按钮之后
+    stopStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 999);
+    stopStatusBarItem.command = 'quickNodeRunner.stop';
+    context.subscriptions.push(stopStatusBarItem);
 
     // 创建输出通道
     outputChannel = vscode.window.createOutputChannel('Quick Node Runner');
@@ -310,7 +318,7 @@ async function checkAndSyncProjectStatus(context: vscode.ExtensionContext) {
             } catch (e) {
                 // 进程不存在，更新状态
                 updateGlobalState(context, false);
-                vscode.window.showInformationMessage('之前运行的项目已停止');
+                // vscode.window.showInformationMessage('之前运行的项目已停止');
             }
         } else {
             // 项目未运行，更新状态栏
@@ -379,18 +387,28 @@ function updateStatusBar(context: vscode.ExtensionContext) {
         statusBarItem.tooltip = '点击设置 Node 项目路径';
         statusBarItem.command = 'quickNodeRunner.setProjectPath';
         statusBarItem.show();
+        stopStatusBarItem.hide();
         return;
     }
 
     if (globalState.isRunning && globalState.scriptInfo) {
         const projectName = path.basename(globalState.scriptInfo.path);
-        statusBarItem.text = `$(radio-tower) ${globalState.scriptInfo.script} (${projectName})`;
+        statusBarItem.text = `$(radio-tower) ${globalState.scriptInfo.script}`;
         statusBarItem.tooltip = `正在运行: ${globalState.scriptInfo.script}\n项目: ${projectName}\n点击查看选项`;
-        statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        // statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        
+        // 显示停止按钮
+        stopStatusBarItem.text = '$(circle-slash)';
+        // stopStatusBarItem.color = '#FF0000'; // 设置图标颜色为红色
+        stopStatusBarItem.tooltip = `停止运行: ${globalState.scriptInfo.script}\n项目: ${projectName}\n`;
+        // stopStatusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        stopStatusBarItem.show();
     } else {
         statusBarItem.text = '$(play) 运行 Node 项目';
         statusBarItem.tooltip = '点击运行 Node 项目';
-        statusBarItem.backgroundColor = undefined;
+        
+        // 隐藏停止按钮
+        stopStatusBarItem.hide();
     }
     statusBarItem.command = 'quickNodeRunner.showMenu';
     statusBarItem.show();
@@ -505,6 +523,9 @@ export function deactivate(context: vscode.ExtensionContext) {
     // 移除状态栏项
     if (statusBarItem) {
         statusBarItem.dispose();
+    }
+    if (stopStatusBarItem) {
+        stopStatusBarItem.dispose();
     }
 
     // 清空配置

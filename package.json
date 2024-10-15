@@ -2,8 +2,9 @@
   "name": "quick-node-runner",
   "displayName": "Quick Node Runner",
   "description": "快速运行 Node 项目，无需手动打开终端",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "RyanYu",
+  "icon": "assets/logo.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/yuhang1995/quick-node-runner.git"
