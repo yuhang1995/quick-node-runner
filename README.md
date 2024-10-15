@@ -8,7 +8,20 @@ Quick Node Runner 是一个 Visual Studio Code 扩展，旨在简化 Node.js 项
 
 ## 安装
 
-该插件没有发布在市场中，可以直接通过 VSIX 文件安装
+您可以通过以下两种方式安装 Quick Node Runner 扩展：
+
+### 方法1：通过 VS Code Marketplace 安装
+
+1. 打开 Visual Studio Code
+2. 转到扩展视图（Ctrl+Shift+X）
+3. 在搜索框中输入 "Quick Node Runner"
+4. 点击 "安装" 按钮
+
+或者，您可以直接访问 [Quick Node Runner 的 Marketplace 页面](https://marketplace.visualstudio.com/items?itemName=RyanYu.quick-node-runner)，然后点击 "安装" 按钮。
+
+### 方法2：通过 VSIX 文件安装
+
+如果您prefer手动安装，您仍然可以通过 VSIX 文件安装：
 
 1. 访问 [GitHub Releases 页面](https://github.com/yuhang1995/quick-node-runner/releases)
 2. 在最新的 release 中下载 `.vsix` 文件
