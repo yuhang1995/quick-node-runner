@@ -46,7 +46,6 @@
       "properties": {
         "quickNodeRunner.projectPath": {
           "type": "string",
-          "default": "",
           "description": "Node 项目的路径"
         }
       }
